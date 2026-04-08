@@ -150,6 +150,9 @@ class V2VDecisionNode(Node):
         # 협상 요청 발행 여부
         self._rps_request_sent: bool = False
 
+        # 후진 시작 여부 (REVERSE_EXECUTE 진입 시 True, 완료 시 False)
+        self._reverse_started: bool = False
+
         # 대기 시간 누적 (점수 계산용)
         self.wait_accumulated_sec: float = 0.0
 
@@ -197,10 +200,13 @@ class V2VDecisionNode(Node):
             self.rps_timed_out = False
         elif state == State.SCORE_BASED_DECISION:
             self.decision_result = 'none'
+        elif state == State.REVERSE_EXECUTE:
+            self._reverse_started = True
         elif state == State.NORMAL_CENTER_DRIVE:
             self.wait_accumulated_sec = 0.0
             self.deadlock_start_time = None
             self.decision_result = 'none'
+            self._reverse_started = False
         elif state == State.SAFE_STOP:
             pass
 
@@ -435,10 +441,8 @@ class V2VDecisionNode(Node):
         # ── REVERSE_EXECUTE ────────────────────────────────────────────────
         if self.state == State.REVERSE_EXECUTE:
             self._publish_all('REVERSE_EXECUTE', 'RED', 'yield')
-            # reverse_path_planner_node가 경로를 생성하고
-            # chassis_control_node가 후진 완료 시 /reverse_goal_ready=False 로 신호
-            if not self.reverse_goal_ready:
-                # 후진 완료 (spatial_memory_node가 goal 소모)
+            # reverse_goal_ready가 True→False 로 전이되면 후진 완료
+            if self._reverse_started and not self.reverse_goal_ready:
                 self.transition(State.WAIT_PASS)
             return
 

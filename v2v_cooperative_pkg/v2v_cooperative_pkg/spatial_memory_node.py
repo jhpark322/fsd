@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Deque, List, Optional, Tuple
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Point as GPoint, PoseStamped, Quaternion
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32, String
@@ -205,9 +205,9 @@ class SpatialMemoryNode(Node):
         # 가까운 것부터 정렬
         candidates_with_dist.sort(key=lambda t: t[0])
 
+        min_goal_dist = max(0.15, self.sample_interval_m)
         for dist, sample in candidates_with_dist:
-            if dist < 0.3:
-                # 너무 가까운 것은 패스
+            if dist < min_goal_dist:
                 continue
             if sample.right_clearance >= self.min_right_clearance:
                 self.reverse_goal = sample
@@ -267,7 +267,6 @@ class SpatialMemoryNode(Node):
         mk.scale.x = 0.03
         mk.color.r = 0.0; mk.color.g = 0.8; mk.color.b = 0.2; mk.color.a = 0.9
 
-        from geometry_msgs.msg import Point as GPoint
         for s in self.buffer:
             p = GPoint(); p.x = s.x; p.y = s.y; p.z = 0.02
             mk.points.append(p)

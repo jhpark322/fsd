@@ -135,7 +135,11 @@ class NegotiationHmiNode(Node):
                     if ch in ('r', 'p', 's', 'x'):
                         with self._input_lock:
                             self._input_queue.append(ch)
-            except Exception:
+            except (OSError, EOFError):
+                break
+            except Exception as e:
+                import logging
+                logging.getLogger('negotiation_hmi').debug(f'KB thread: {e}')
                 break
 
     def _get_input(self) -> Optional[str]:
@@ -169,7 +173,9 @@ class NegotiationHmiNode(Node):
         if not self.active:
             return
 
-        elapsed = self._now() - (self.negotiation_start or self._now())
+        if self.negotiation_start is None:
+            return
+        elapsed = self._now() - self.negotiation_start
 
         # 결과 발행 후 hold 시간이 지나면 리셋
         if self.result_published and self.result_stamp is not None:
