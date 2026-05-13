@@ -92,7 +92,7 @@ class LedInterfaceNode(Node):
 
         # ── 내부 상태 ─────────────────────────────────────────────────────
         self.current_command: str = 'OFF'
-        self.led_score: float = 0.0
+        self.ego_yield_score: float = 0.0
         self._blink_state: bool = False
         self._blink_timer: float = 0.0
         self._last_pattern: List[bool] = [False] * 5
@@ -136,12 +136,12 @@ class LedInterfaceNode(Node):
     def _cb_score(self, msg: Float32) -> None:
         v = float(msg.data)
         if math.isfinite(v):
-            self.led_score = max(0.0, min(1.0, v))
+            self.ego_yield_score = max(0.0, min(1.0, v))
 
     # ── LED 출력 ──────────────────────────────────────────────────────────
     def _score_to_count(self) -> int:
         """점수(0~1)를 점등 LED 개수(1~5)로 변환."""
-        return max(1, min(5, round(self.led_score * 4) + 1))
+        return max(1, min(5, round(self.ego_yield_score * 4) + 1))
 
     def _apply_score_to_pattern(self, pattern: List[bool]) -> List[bool]:
         """점수 기반 판단 상태에서는 점등 개수로 점수 표현."""
@@ -197,7 +197,7 @@ class LedInterfaceNode(Node):
         # 피드백 발행
         on_count = sum(pattern)
         fb = String()
-        fb.data = f'{cmd} leds={on_count} score={self.led_score:.2f}'
+        fb.data = f'{cmd} leds={on_count} score={self.ego_yield_score:.2f}'
         self.pub_feedback.publish(fb)
 
     # ── 소멸자 ───────────────────────────────────────────────────────────

@@ -139,7 +139,10 @@ public:
 
         sub_map_  = create_subscription<nav_msgs::msg::OccupancyGrid>(
             "/map", 1,
-            [this](nav_msgs::msg::OccupancyGrid::SharedPtr m) { map_ = m; });
+            [this](nav_msgs::msg::OccupancyGrid::SharedPtr m) {
+                map_ = m;
+                plan_if_reversing();
+            });
 
         sub_odom_ = create_subscription<nav_msgs::msg::Odometry>(
             "/odom", 10,
@@ -147,7 +150,11 @@ public:
 
         sub_goal_ = create_subscription<geometry_msgs::msg::PoseStamped>(
             "/reverse_goal", 10,
-            [this](geometry_msgs::msg::PoseStamped::SharedPtr m) { goal_ = m; });
+            [this](geometry_msgs::msg::PoseStamped::SharedPtr m) {
+                goal_ = m;
+                path_ready_ = false;
+                plan_if_reversing();
+            });
 
         sub_state_ = create_subscription<std_msgs::msg::String>(
             "/vehicle_state", 10,
@@ -156,6 +163,8 @@ public:
                 vehicle_state_ = m->data;
                 if (prev != "REVERSE_EXECUTE" && vehicle_state_ == "REVERSE_EXECUTE")
                     plan();
+                if (vehicle_state_ != "REVERSE_EXECUTE")
+                    path_ready_ = false;
             });
 
         pub_path_  = create_publisher<nav_msgs::msg::Path>("/reverse_path", 1);
@@ -170,6 +179,11 @@ public:
     }
 
 private:
+    void plan_if_reversing() {
+        if (vehicle_state_ == "REVERSE_EXECUTE")
+            plan();
+    }
+
     bool world_to_cell(double wx, double wy, int &row, int &col) const {
         if (!map_) return false;
         auto &info = map_->info;

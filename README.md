@@ -68,6 +68,20 @@
 
 ---
 
+## 노드 구현 기준
+
+이 저장소는 노드 성격에 따라 C++와 Python을 나눠 사용한다.
+
+| 구현 | 적용 노드 | 이유 |
+|------|-----------|------|
+| C++ | `chassis_control_node`, `safety_supervisor_node`, `reverse_path_planner_node` | 20Hz 제어, 안전 정지, A* 경로 탐색처럼 지연과 반복 연산이 실제 주행 안정성에 직접 영향을 주는 부분 |
+| Python | `v2v_decision_node`, `visual_v2v_perception_node`, `spatial_memory_node`, `negotiation_hmi_node`, `led_interface_node` | 상태 정책, HMI, LED 프로토콜, HSV/ROI 기반 프로토타입 인식처럼 실험 중 파라미터와 로직을 자주 바꾸는 부분 |
+| Python fallback | `*_node_py` | C++ 노드 빌드가 어려운 환경에서 같은 토픽 계약으로 기능 확인 |
+
+실차 주행 기본 조합은 C++ 제어/안전/경로 노드와 Python 판단/인지/HMI 노드를 함께 실행하는 것이다.
+
+---
+
 ## 상태 기계 (State Machine)
 
 ```
@@ -83,7 +97,7 @@
 │         │                          │         ▼          │
 │  (재정렬 완료)                      │  RPS_NEGOTIATION   │
 │         │                          │    │       │       │
-│      WAIT_PASS ◄──(후진 완료)──┐   │  (승리)  (실패)   │
+│      WAIT_PASS ◄──(후진 완료 신호)┐  │  (승리)  (실패)   │
 │         │                      │   │    │       │       │
 │  (상대 통과)                    │   │    │       ▼       │
 │                                │   │    │  SCORE_BASED  │
@@ -131,12 +145,12 @@ Yield Score = 0.30×S_space + 0.25×S_reverse + 0.20×S_entry
                 └──► lane_guidance_mux_node
                               │
                               ├─► v2v_decision_node ──┬──► negotiation_hmi_node
-                              │         │             ├──► led_interface_node
+                              │         │             ├──► led_interface_node (/ego_yield_score)
                               │         │             └──► spatial_memory_node
                               │         │
                               │         └──► reverse_path_planner_node (C++)
                               │                        │
-                              └──► chassis_control_node (C++) ──► /cmd_vel
+                              └──► chassis_control_node (C++) ──► /cmd_vel, /reverse_motion_done
                                            │
 [LiDAR] ──► safety_supervisor_node (C++) ──┘
 [SLAM]  ──► reverse_path_planner_node

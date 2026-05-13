@@ -14,6 +14,9 @@ chassis_control_node
   SAFE_STOP            → 즉시 정지
   그 외               → 정지
 
+후진 목표 도달 시 /reverse_motion_done = True 를 발행해
+v2v_decision_node가 WAIT_PASS로 전이할 수 있게 한다.
+
 입력 토픽:
   /control_mode            String
   /lane_error_center_m_active Float32
@@ -26,6 +29,7 @@ chassis_control_node
 
 출력 토픽:
   /cmd_vel   geometry_msgs/Twist
+  /reverse_motion_done Bool
 """
 
 import math
@@ -121,6 +125,7 @@ class ChassisControlNode(Node):
 
         # ── 발행 ─────────────────────────────────────────────────────────
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pub_reverse_done = self.create_publisher(Bool, '/reverse_motion_done', 10)
 
         dt = 1.0 / self.control_hz if self.control_hz > 0 else 0.05
         self.create_timer(dt, self._step)
@@ -133,6 +138,7 @@ class ChassisControlNode(Node):
             self.get_logger().info(f'[Chassis] 모드 전환: {self.control_mode} → {new_mode}')
             if new_mode == 'REVERSE_EXECUTE':
                 self.reverse_done = False
+                self._publish_reverse_done(False)
         self.control_mode = new_mode
 
     def _cb_stop(self, msg: Bool) -> None:
@@ -160,6 +166,7 @@ class ChassisControlNode(Node):
     def _cb_path(self, msg: Path) -> None:
         self.reverse_path = msg
         self.reverse_done = False
+        self._publish_reverse_done(False)
 
     # ── 유틸 ─────────────────────────────────────────────────────────────
     def _now(self) -> float:
@@ -178,6 +185,11 @@ class ChassisControlNode(Node):
         tw.linear.x  = float(linear_x)
         tw.angular.z = float(angular_z)
         self.pub_cmd.publish(tw)
+
+    def _publish_reverse_done(self, done: bool) -> None:
+        msg = Bool()
+        msg.data = bool(done)
+        self.pub_reverse_done.publish(msg)
 
     # ── PID 차선 추종 ─────────────────────────────────────────────────────
     def _compute_speed(self, abs_err: float) -> float:
@@ -248,6 +260,7 @@ class ChassisControlNode(Node):
         if dist_to_goal <= self.reverse_goal_tol_m:
             self.get_logger().info('[Chassis] 후진 목표 도달')
             self.reverse_done = True
+            self._publish_reverse_done(True)
             self._stop()
             return
 
@@ -304,8 +317,10 @@ class ChassisControlNode(Node):
 
         if mode == 'REVERSE_EXECUTE':
             if self.reverse_done:
+                self._publish_reverse_done(True)
                 self._stop()
             else:
+                self._publish_reverse_done(False)
                 self._reverse_pure_pursuit()
             return
 

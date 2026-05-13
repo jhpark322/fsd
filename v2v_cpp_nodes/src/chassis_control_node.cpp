@@ -9,6 +9,9 @@
  *   REENTER              → PID 중앙 (감속)
  *   REVERSE_EXECUTE      → Reverse Pure Pursuit
  *   WAIT_PASS / SAFE_STOP→ 즉시 정지
+ *
+ * 후진 목표 도달 시 /reverse_motion_done = True 를 발행해
+ * v2v_decision_node가 WAIT_PASS로 전이할 수 있게 한다.
  */
 
 #include <cmath>
@@ -115,11 +118,14 @@ public:
         sub_path_    = create_subscription<nav_msgs::msg::Path>(
             "/reverse_path", 10,
             [this](nav_msgs::msg::Path::SharedPtr m) {
-                reverse_path_ = m; reverse_done_ = false;
+                reverse_path_ = m;
+                reverse_done_ = false;
+                publish_reverse_done(false);
             });
 
         // ── 발행 ────────────────────────────────────────────────────
         pub_cmd_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+        pub_reverse_done_ = create_publisher<std_msgs::msg::Bool>("/reverse_motion_done", 10);
 
         double dt = (control_hz_ > 0) ? (1.0 / control_hz_) : 0.05;
         timer_ = create_wall_timer(
@@ -145,6 +151,11 @@ private:
         tw.linear.x = lx;
         tw.angular.z = az;
         pub_cmd_->publish(tw);
+    }
+    void publish_reverse_done(bool done) {
+        std_msgs::msg::Bool msg;
+        msg.data = done;
+        pub_reverse_done_->publish(msg);
     }
 
     // ── PID 차선 추종 ───────────────────────────────────────────────
@@ -182,6 +193,7 @@ private:
         if (std::hypot(gx - cx, gy - cy) <= reverse_goal_tol_m_) {
             RCLCPP_INFO(get_logger(), "[Chassis] 후진 목표 도달");
             reverse_done_ = true;
+            publish_reverse_done(true);
             publish_stop();
             return;
         }
@@ -237,8 +249,13 @@ private:
             pid_follow(center_err_, reenter_speed_scale_); return;
         }
         if (mode == "REVERSE_EXECUTE") {
-            if (reverse_done_) publish_stop();
-            else reverse_pure_pursuit();
+            if (reverse_done_) {
+                publish_reverse_done(true);
+                publish_stop();
+            } else {
+                publish_reverse_done(false);
+                reverse_pure_pursuit();
+            }
             return;
         }
         publish_stop();
@@ -267,6 +284,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr     sub_path_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr   pub_cmd_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr          pub_reverse_done_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 

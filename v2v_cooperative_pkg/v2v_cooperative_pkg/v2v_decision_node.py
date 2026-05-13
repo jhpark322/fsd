@@ -36,6 +36,7 @@ v2v_decision_node
   /opponent_yield_score         Float32   (visual_v2v_perception_node)
   /memory_status                String    (spatial_memory_node)
   /reverse_goal_ready           Bool      (spatial_memory_node)
+  /reverse_motion_done          Bool      (chassis_control_node)
   /rps_result                   String    ('win'/'lose'/'draw'/'none')
   /rps_timeout                  Bool
   /safe_stop                    Bool      (safety_supervisor_node)
@@ -136,6 +137,7 @@ class V2VDecisionNode(Node):
         self.ego_yield_score: float = 0.0
         self.memory_status: str = 'lost'
         self.reverse_goal_ready: bool = False
+        self.reverse_motion_done: bool = False
         self.rps_result: str = 'none'
         self.rps_timed_out: bool = False
         self.safe_stop_flag: bool = False
@@ -152,8 +154,7 @@ class V2VDecisionNode(Node):
         # 협상 요청 발행 여부
         self._rps_request_sent: bool = False
 
-        # 후진 시작 여부 (REVERSE_EXECUTE 진입 시 True, 완료 시 False)
-        self._reverse_started: bool = False
+        # 후진 완료 여부는 chassis_control_node가 발행한다.
 
         # 대기 시간 누적 (점수 계산용)
         self.wait_accumulated_sec: float = 0.0
@@ -167,6 +168,7 @@ class V2VDecisionNode(Node):
         self.create_subscription(Float32, '/opponent_yield_score',        self._cb_opponent_score, 10)
         self.create_subscription(String,  '/memory_status',               self._cb_mem_status, 10)
         self.create_subscription(Bool,    '/reverse_goal_ready',          self._cb_rev_goal, 10)
+        self.create_subscription(Bool,    '/reverse_motion_done',         self._cb_reverse_done, 10)
         self.create_subscription(String,  '/rps_result',                  self._cb_rps_result, 10)
         self.create_subscription(Bool,    '/rps_timeout',                 self._cb_rps_timeout, 10)
         self.create_subscription(Bool,    '/safe_stop',                   self._cb_safe_stop, 10)
@@ -204,12 +206,12 @@ class V2VDecisionNode(Node):
         elif state == State.SCORE_BASED_DECISION:
             self.decision_result = 'none'
         elif state == State.REVERSE_EXECUTE:
-            self._reverse_started = True
+            self.reverse_motion_done = False
         elif state == State.NORMAL_CENTER_DRIVE:
             self.wait_accumulated_sec = 0.0
             self.deadlock_start_time = None
             self.decision_result = 'none'
-            self._reverse_started = False
+            self.reverse_motion_done = False
         elif state == State.SAFE_STOP:
             pass
 
@@ -240,6 +242,9 @@ class V2VDecisionNode(Node):
 
     def _cb_rev_goal(self, msg: Bool) -> None:
         self.reverse_goal_ready = bool(msg.data)
+
+    def _cb_reverse_done(self, msg: Bool) -> None:
+        self.reverse_motion_done = bool(msg.data)
 
     def _cb_rps_result(self, msg: String) -> None:
         self.rps_result = str(msg.data).strip().lower()
@@ -447,8 +452,7 @@ class V2VDecisionNode(Node):
         # ── REVERSE_EXECUTE ────────────────────────────────────────────────
         if self.state == State.REVERSE_EXECUTE:
             self._publish_all('REVERSE_EXECUTE', 'RED', 'yield')
-            # reverse_goal_ready가 True→False 로 전이되면 후진 완료
-            if self._reverse_started and not self.reverse_goal_ready:
+            if self.reverse_motion_done:
                 self.transition(State.WAIT_PASS)
             return
 
