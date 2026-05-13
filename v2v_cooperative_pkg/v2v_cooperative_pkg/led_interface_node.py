@@ -6,17 +6,8 @@ led_interface_node
 
 /led_command 토픽을 수신해 LED 5개를 상태에 따라 제어한다.
 
-LED 색상 코드 → 상태 의미:
-  GREEN         : NORMAL_CENTER_DRIVE (정상 중앙 주행)
-  YELLOW        : KEEP_RIGHT_APPROACH (우측통행 접근)
-  ORANGE_BLINK  : DEADLOCK_DETECTED   (교착 감지)
-  BLUE_BLINK    : RPS_NEGOTIATION     (가위바위보 협상 중)
-  PURPLE_BLINK  : SCORE_BASED_DECISION (점수 기반 판단)
-  RED           : REVERSE_EXECUTE     (후진 양보)
-  CYAN          : WAIT_PASS           (통과 대기)
-  GREEN_BLINK   : REENTER             (재진입)
-  RED_BLINK     : SAFE_STOP           (비상 정지)
-  GREEN_FLASH   : 협상 승리 / 진행 결정
+LED 명령은 색이 아니라 5개 LED의 on/off 패턴으로 표현한다.
+패턴 순서: [LED1, LED2, LED3, LED4, LED5], 1=켜짐, 0=꺼짐.
 
 점등 개수: ego_yield_score (0~1) 에 비례해 1~5개 표시 (점수 우위 표현)
 
@@ -45,20 +36,22 @@ from std_msgs.msg import Float32, String
 # LED 핀 번호 (BCM 기준, Jetson Orin Nano GPIO 번호로 교체 가능)
 _DEFAULT_PIN_MAP = [18, 23, 24, 25, 12]  # LED 1~5번 핀
 
-# 색상 RGB 근사 (NeoPixel 미사용, 단색 LED이므로 on/off 제어)
-# 색상별 점등 패턴 [LED1, LED2, LED3, LED4, LED5]
-_COLOR_PATTERNS = {
-    'GREEN':          [True,  True,  True,  True,  True ],
-    'YELLOW':         [True,  True,  True,  False, False],
-    'ORANGE_BLINK':   [True,  True,  True,  False, False],  # blink 처리
-    'BLUE_BLINK':           [False, True,  True,  True,  False],
-    'PURPLE_BLINK':         [True,  False, True,  False, True ],
+# 명령별 5비트 패턴. Visual V2V 인식 노드의 PATTERN_TO_STATE와 맞춘다.
+_COMMAND_PATTERNS = {
+    'GREEN':                [True,  False, False, False, True ],  # normal
+    'YELLOW':               [False, True,  False, True,  False],  # keep_right
+    'ORANGE_BLINK':         [True,  False, True,  True,  False],  # deadlock
+    'BLUE_BLINK':           [False, False, True,  False, False],  # rps_request
+    'PURPLE_BLINK':         [True,  False, True,  False, True ],  # score_based
     'SCORE_BASED_DECISION': [True,  False, True,  False, True ],
-    'RED':                  [True,  False, False, False, False],
-    'RED_BLINK':            [True,  False, False, False, False],
-    'CYAN':                 [False, True,  False, True,  False],
-    'GREEN_BLINK':          [True,  True,  True,  True,  True ],
-    'GREEN_FLASH':          [True,  True,  True,  True,  True ],
+    'RED':                  [True,  False, False, True,  False],  # yield
+    'CYAN':                 [False, True,  False, False, True ],  # wait_pass
+    'GREEN_BLINK':          [False, False, True,  True,  True ],  # reenter
+    'RED_BLINK':            [False, False, False, True,  False],  # safe_stop
+    'GREEN_FLASH':          [False, True,  True,  True,  False],  # proceed
+    'RPS_ROCK':             [True,  True,  False, False, True ],
+    'RPS_PAPER':            [False, False, True,  False, True ],
+    'RPS_SCISSORS':         [False, True,  True,  False, True ],
     'OFF':                  [False, False, False, False, False],
 }
 
@@ -183,7 +176,7 @@ class LedInterfaceNode(Node):
         dt = 1.0 / self.led_hz if self.led_hz > 0 else 0.1
         cmd = self.current_command
 
-        base_pattern = _COLOR_PATTERNS.get(cmd, _COLOR_PATTERNS['OFF'])
+        base_pattern = _COMMAND_PATTERNS.get(cmd, _COMMAND_PATTERNS['OFF'])
         base_pattern = self._apply_score_to_pattern(base_pattern)
 
         if cmd in _BLINK_COMMANDS:

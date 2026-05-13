@@ -51,10 +51,10 @@
 | 노드 | 역할 |
 |------|------|
 | `v2v_decision_node` | **9상태 FSM** — 중앙주행→우측통행→교착→협상→점수판단→후진→대기→재진입→안전정지 |
-| `visual_v2v_perception_node` | 상단 ROI 기반 상대 LED 패널/상태/점수 인식 + 상대 거리 추정 |
+| `visual_v2v_perception_node` | 상단 ROI 기반 상대 LED 5비트 패턴/상태/점수 인식 + 상대 거리 추정 |
 | `spatial_memory_node` | 0.5m 간격 10m FIFO 공간 기억 + reverse_goal (후진 비켜줄 지점) 계산 |
 | `negotiation_hmi_node` | 가위바위보 협상 HMI (키보드 r/p/s/x 입력 + LED 상태 판독 + 타임아웃) |
-| `led_interface_node` | LED 5개 상태별 색상 패턴 + 점수 기반 점등 개수 표현 (Jetson GPIO/RPi.GPIO) |
+| `led_interface_node` | LED 5개 상태별 on/off 패턴 + 점수 기반 점등 개수 표현 (Jetson GPIO/RPi.GPIO) |
 
 ### 3. `v2v_cpp_nodes` — 성능 핵심 노드 (C++)
 
@@ -75,7 +75,7 @@
 | 구현 | 적용 노드 | 이유 |
 |------|-----------|------|
 | C++ | `chassis_control_node`, `safety_supervisor_node`, `reverse_path_planner_node` | 20Hz 제어, 안전 정지, A* 경로 탐색처럼 지연과 반복 연산이 실제 주행 안정성에 직접 영향을 주는 부분 |
-| Python | `v2v_decision_node`, `visual_v2v_perception_node`, `spatial_memory_node`, `negotiation_hmi_node`, `led_interface_node` | 상태 정책, HMI, LED 프로토콜, HSV/ROI 기반 프로토타입 인식처럼 실험 중 파라미터와 로직을 자주 바꾸는 부분 |
+| Python | `v2v_decision_node`, `visual_v2v_perception_node`, `spatial_memory_node`, `negotiation_hmi_node`, `led_interface_node` | 상태 정책, HMI, LED 프로토콜, 밝기/ROI 기반 패턴 인식처럼 실험 중 파라미터와 로직을 자주 바꾸는 부분 |
 | Python fallback | `*_node_py` | C++ 노드 빌드가 어려운 환경에서 같은 토픽 계약으로 기능 확인 |
 
 실차 주행 기본 조합은 C++ 제어/안전/경로 노드와 Python 판단/인지/HMI 노드를 함께 실행하는 것이다.
@@ -135,12 +135,37 @@ Yield Score = 0.30×S_space + 0.25×S_reverse + 0.20×S_entry
 
 ---
 
+## LED 패턴 프로토콜
+
+LED는 색상이 아니라 5개 LED의 on/off 패턴으로 인식한다. 패턴은 왼쪽부터 `LED1..LED5` 순서이며 `1`은 켜짐, `0`은 꺼짐이다.
+
+| 패턴 | 의미 |
+|------|------|
+| `10001` | 정상 중앙 주행 |
+| `01010` | 우측통행 접근 |
+| `10110` | 교착 감지 |
+| `00100` | 가위바위보 협상 요청 |
+| `10010` | 양보 후진 |
+| `01001` | 통과 대기 |
+| `00111` | 재진입 |
+| `00010` | 안전 정지 |
+| `01110` | 진행 결정 |
+| `11001` | 가위바위보 바위 |
+| `00101` | 가위바위보 보 |
+| `01101` | 가위바위보 가위 |
+
+점수 기반 판단 중에는 점수 레벨을 `10000`, `11000`, `11100`, `11110`, `11111`로 표시한다. 각각 0.2, 0.4, 0.6, 0.8, 1.0에 해당한다.
+
+꺼진 LED는 카메라 blob으로 보이지 않으므로, 수신 노드는 5개가 모두 켜진 패턴을 본 프레임에서 패널 폭을 보정한 뒤 일부 LED만 켜진 패턴을 안정적으로 해석한다.
+
+---
+
 ## 토픽 흐름
 
 ```
 [카메라] → lane_detection_node → lane_memory_node
     │
-    └──► visual_v2v_perception_node ──► /relative_distance, /led_state, /opponent_yield_score
+    └──► visual_v2v_perception_node ──► /relative_distance, /led_pattern, /led_state, /opponent_yield_score
                 │                      │
                 └──► lane_guidance_mux_node
                               │
@@ -231,7 +256,7 @@ ros2 run v2v_cpp_nodes reverse_path_planner_node
 | 연산 장치 | Jetson Orin Nano |
 | 카메라 | Logitech C920e (1280×720, 30fps) |
 | LiDAR | 2D LiDAR (360°) |
-| LED | 일반 LED 5개 직렬 (상태 색상 + 점수 점등 개수) |
+| LED | 일반 LED 5개 직렬 (상태/협상/점수 5비트 패턴) |
 | 하위 제어 | OpenCR |
 
 ---

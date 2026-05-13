@@ -8,11 +8,10 @@ The design documents describe a lightweight perception split:
   upper ROI  -> opponent vehicle / LED panel
   lower ROI  -> lane pipeline handled by lane_length_pkg
 
-This node fills the missing upper-ROI side. It keeps the implementation
-classical and inspectable so it can run before a YOLO model is available:
-it detects bright LED blobs by HSV color masks, groups them as a panel,
-estimates the opponent distance from panel size, and publishes the decoded
-state plus score ratio for the decision node.
+This node fills the missing upper-ROI side. It reads the LED strip as a
+5-bit on/off pattern, not by color. Bright blobs are grouped into a panel,
+quantized into five slots, decoded through a pattern table, and published
+as state plus score ratio for the decision node.
 
 Inputs:
   /image_raw                  sensor_msgs/Image
@@ -20,6 +19,7 @@ Inputs:
 Outputs:
   /relative_distance          std_msgs/Float32
   /led_state                  std_msgs/String
+  /led_pattern                std_msgs/String
   /opponent_yield_score       std_msgs/Float32
   /visual_v2v_status          std_msgs/String
 """
@@ -41,8 +41,33 @@ class LedBlob:
     cx: float
     cy: float
     area: float
-    color: str
     bbox: Tuple[int, int, int, int]
+
+
+SCORE_PATTERNS: Dict[str, float] = {
+    '10000': 0.2,
+    '11000': 0.4,
+    '11100': 0.6,
+    '11110': 0.8,
+    '11111': 1.0,
+}
+
+
+PATTERN_TO_STATE: Dict[str, str] = {
+    '10001': 'normal',
+    '01010': 'keep_right',
+    '10110': 'deadlock',
+    '00100': 'rps_request',
+    '10101': 'score_based',
+    '10010': 'yield',
+    '01001': 'wait_pass',
+    '00111': 'reenter',
+    '00010': 'safe_stop',
+    '01110': 'proceed',
+    '11001': 'rps_rock',
+    '00101': 'rps_paper',
+    '01101': 'rps_scissors',
+}
 
 
 class VisualV2VPerceptionNode(Node):
@@ -53,6 +78,7 @@ class VisualV2VPerceptionNode(Node):
         self.declare_parameter('upper_roi_ratio', 0.45)
         self.declare_parameter('min_blob_area_px', 30.0)
         self.declare_parameter('max_blob_area_px', 5000.0)
+        self.declare_parameter('min_led_brightness', 130)
         self.declare_parameter('panel_real_width_m', 0.12)
         self.declare_parameter('camera_fx_px', 700.0)
         self.declare_parameter('distance_min_m', 0.15)
@@ -64,6 +90,7 @@ class VisualV2VPerceptionNode(Node):
         self.upper_roi_ratio = float(self.get_parameter('upper_roi_ratio').value)
         self.min_blob_area_px = float(self.get_parameter('min_blob_area_px').value)
         self.max_blob_area_px = float(self.get_parameter('max_blob_area_px').value)
+        self.min_led_brightness = int(self.get_parameter('min_led_brightness').value)
         self.panel_real_width_m = float(self.get_parameter('panel_real_width_m').value)
         self.camera_fx_px = float(self.get_parameter('camera_fx_px').value)
         self.distance_min_m = float(self.get_parameter('distance_min_m').value)
@@ -75,11 +102,14 @@ class VisualV2VPerceptionNode(Node):
         self.last_detection_stamp: Optional[float] = None
         self.last_distance: Optional[float] = None
         self.last_state = 'unknown'
+        self.last_pattern = '00000'
         self.last_score = 0.0
+        self.panel_bounds: Optional[Tuple[float, float]] = None
 
         self.create_subscription(Image, self.image_topic, self._cb_image, 10)
         self.pub_distance = self.create_publisher(Float32, '/relative_distance', 10)
         self.pub_led_state = self.create_publisher(String, '/led_state', 10)
+        self.pub_led_pattern = self.create_publisher(String, '/led_pattern', 10)
         self.pub_score = self.create_publisher(Float32, '/opponent_yield_score', 10)
         self.pub_status = self.create_publisher(String, '/visual_v2v_status', 10)
         self.pub_debug = self.create_publisher(Image, '/visual_v2v/debug_image', 1)
@@ -105,10 +135,12 @@ class VisualV2VPerceptionNode(Node):
         panel = self._select_panel(blobs)
         if panel:
             distance = self._estimate_distance(panel)
-            state, score = self._decode_panel(panel)
+            pattern = self._panel_to_pattern(panel)
+            state, score = self._decode_pattern(pattern)
             self.last_detection_stamp = self._now()
             self.last_distance = distance
             self.last_state = state
+            self.last_pattern = pattern
             self.last_score = score
             self._publish_detection(distance, state, score)
 
@@ -117,35 +149,25 @@ class VisualV2VPerceptionNode(Node):
             self.pub_debug.publish(self.bridge.cv2_to_imgmsg(debug, encoding='bgr8'))
 
     def _detect_led_blobs(self, bgr: np.ndarray) -> List[LedBlob]:
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        masks: Dict[str, np.ndarray] = {
-            'red': cv2.bitwise_or(
-                cv2.inRange(hsv, np.array([0, 80, 100]), np.array([10, 255, 255])),
-                cv2.inRange(hsv, np.array([170, 80, 100]), np.array([180, 255, 255])),
-            ),
-            'green': cv2.inRange(hsv, np.array([40, 60, 80]), np.array([85, 255, 255])),
-            'blue': cv2.inRange(hsv, np.array([95, 60, 80]), np.array([135, 255, 255])),
-            'yellow': cv2.inRange(hsv, np.array([18, 80, 100]), np.array([38, 255, 255])),
-            'cyan': cv2.inRange(hsv, np.array([80, 60, 80]), np.array([100, 255, 255])),
-            'purple': cv2.inRange(hsv, np.array([135, 50, 80]), np.array([165, 255, 255])),
-        }
-
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, self.min_led_brightness, 255, cv2.THRESH_BINARY)
         kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
         blobs: List[LedBlob] = []
-        for color, mask in masks.items():
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                area = float(cv2.contourArea(contour))
-                if area < self.min_blob_area_px or area > self.max_blob_area_px:
-                    continue
-                x, y, bw, bh = cv2.boundingRect(contour)
-                if bw <= 0 or bh <= 0:
-                    continue
-                aspect = bw / float(bh)
-                if aspect < 0.25 or aspect > 4.0:
-                    continue
-                blobs.append(LedBlob(x + bw / 2.0, y + bh / 2.0, area, color, (x, y, bw, bh)))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < self.min_blob_area_px or area > self.max_blob_area_px:
+                continue
+            x, y, bw, bh = cv2.boundingRect(contour)
+            if bw <= 0 or bh <= 0:
+                continue
+            aspect = bw / float(bh)
+            if aspect < 0.25 or aspect > 4.0:
+                continue
+            blobs.append(LedBlob(x + bw / 2.0, y + bh / 2.0, area, (x, y, bw, bh)))
         return blobs
 
     def _select_panel(self, blobs: List[LedBlob]) -> List[LedBlob]:
@@ -163,29 +185,44 @@ class VisualV2VPerceptionNode(Node):
     def _estimate_distance(self, panel: List[LedBlob]) -> float:
         if len(panel) < 2:
             return self.distance_max_m
-        min_x = min(b.bbox[0] for b in panel)
-        max_x = max(b.bbox[0] + b.bbox[2] for b in panel)
+        detected_min = min(b.bbox[0] for b in panel)
+        detected_max = max(b.bbox[0] + b.bbox[2] for b in panel)
+        if self.panel_bounds is not None and len(panel) < 5:
+            min_x, max_x = self.panel_bounds
+        else:
+            min_x, max_x = float(detected_min), float(detected_max)
         panel_width_px = max(1.0, float(max_x - min_x))
         distance = self.panel_real_width_m * self.camera_fx_px / panel_width_px
         return max(self.distance_min_m, min(self.distance_max_m, distance))
 
-    def _decode_panel(self, panel: List[LedBlob]) -> Tuple[str, float]:
+    def _panel_to_pattern(self, panel: List[LedBlob]) -> str:
         if not panel:
-            return 'unknown', 0.0
-        counts: Dict[str, int] = {}
+            return '00000'
+
+        detected_min = min(b.bbox[0] for b in panel)
+        detected_max = max(b.bbox[0] + b.bbox[2] for b in panel)
+        if len(panel) >= 5:
+            self.panel_bounds = (float(detected_min), float(detected_max))
+
+        if self.panel_bounds is not None and len(panel) < 5:
+            min_x, max_x = self.panel_bounds
+        else:
+            min_x, max_x = float(detected_min), float(detected_max)
+
+        width = max(1.0, float(max_x - min_x))
+        slot_w = width / 5.0
+        slots = [False] * 5
         for blob in panel:
-            counts[blob.color] = counts.get(blob.color, 0) + 1
-        dominant = max(counts.items(), key=lambda item: item[1])[0]
-        score = max(0.0, min(1.0, (len(panel) - 1) / 4.0))
-        state_map = {
-            'green': 'proceed',
-            'yellow': 'keep_right',
-            'red': 'yield',
-            'blue': 'rps_request',
-            'purple': 'score_based',
-            'cyan': 'wait_pass',
-        }
-        return state_map.get(dominant, dominant), score
+            idx = int((blob.cx - min_x) / slot_w)
+            idx = max(0, min(4, idx))
+            slots[idx] = True
+        return ''.join('1' if on else '0' for on in slots)
+
+    def _decode_pattern(self, pattern: str) -> Tuple[str, float]:
+        if pattern in SCORE_PATTERNS:
+            return 'score_based', SCORE_PATTERNS[pattern]
+        state = PATTERN_TO_STATE.get(pattern, 'unknown')
+        return state, 0.0
 
     def _publish_detection(self, distance: float, state: str, score: float) -> None:
         d = Float32()
@@ -195,6 +232,10 @@ class VisualV2VPerceptionNode(Node):
         s = String()
         s.data = state
         self.pub_led_state.publish(s)
+
+        p = String()
+        p.data = self.last_pattern
+        self.pub_led_pattern.publish(p)
 
         sc = Float32()
         sc.data = float(score)
@@ -208,7 +249,7 @@ class VisualV2VPerceptionNode(Node):
         msg = String()
         if fresh:
             msg.data = (
-                f'ok state={self.last_state} distance={self.last_distance:.2f} '
+                f'ok state={self.last_state} pattern={self.last_pattern} distance={self.last_distance:.2f} '
                 f'opponent_score={self.last_score:.2f}'
             )
         else:
@@ -229,7 +270,7 @@ class VisualV2VPerceptionNode(Node):
             cv2.rectangle(debug, (x, y), (x + w, y + h), color, 2)
             cv2.putText(
                 debug,
-                blob.color,
+                'on',
                 (x, max(12, y - 4)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
