@@ -51,6 +51,7 @@
 | 노드 | 역할 |
 |------|------|
 | `v2v_decision_node` | **9상태 FSM** — 중앙주행→우측통행→교착→협상→점수판단→후진→대기→재진입→안전정지 |
+| `visual_v2v_perception_node` | 상단 ROI 기반 상대 LED 패널/상태/점수 인식 + 상대 거리 추정 |
 | `spatial_memory_node` | 0.5m 간격 10m FIFO 공간 기억 + reverse_goal (후진 비켜줄 지점) 계산 |
 | `negotiation_hmi_node` | 가위바위보 협상 HMI (키보드 r/p/s/x 입력 + LED 상태 판독 + 타임아웃) |
 | `led_interface_node` | LED 5개 상태별 색상 패턴 + 점수 기반 점등 개수 표현 (Jetson GPIO/RPi.GPIO) |
@@ -124,6 +125,8 @@ Yield Score = 0.30×S_space + 0.25×S_reverse + 0.20×S_entry
 
 ```
 [카메라] → lane_detection_node → lane_memory_node
+    │
+    └──► visual_v2v_perception_node ──► /relative_distance, /led_state, /opponent_yield_score
                 │                      │
                 └──► lane_guidance_mux_node
                               │
@@ -193,6 +196,7 @@ ros2 run lane_length_pkg lane_guidance_mux_node
 ```bash
 # Python 노드
 ros2 run v2v_cooperative_pkg v2v_decision_node
+ros2 run v2v_cooperative_pkg visual_v2v_perception_node
 ros2 run v2v_cooperative_pkg spatial_memory_node
 ros2 run v2v_cooperative_pkg negotiation_hmi_node
 ros2 run v2v_cooperative_pkg led_interface_node

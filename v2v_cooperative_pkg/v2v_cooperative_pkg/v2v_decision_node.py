@@ -33,7 +33,7 @@ v2v_decision_node
   /lane_width                   Float32
   /relative_distance            Float32   (vision_perception_node)
   /led_state                    String    (vision_perception_node)
-  /led_score                    Float32   (vision_perception_node)
+  /opponent_yield_score         Float32   (visual_v2v_perception_node)
   /memory_status                String    (spatial_memory_node)
   /reverse_goal_ready           Bool      (spatial_memory_node)
   /rps_result                   String    ('win'/'lose'/'draw'/'none')
@@ -46,6 +46,7 @@ v2v_decision_node
   /negotiation_request  Bool
   /decision_result  String   ('yield'/'proceed'/'draw')
   /led_command      String
+  /ego_yield_score  Float32
 """
 
 import math
@@ -131,7 +132,8 @@ class V2VDecisionNode(Node):
         self.lane_width: Optional[float] = None
         self.relative_distance: Optional[float] = None
         self.led_state: str = 'unknown'
-        self.led_score: float = 0.0
+        self.opponent_yield_score: float = 0.0
+        self.ego_yield_score: float = 0.0
         self.memory_status: str = 'lost'
         self.reverse_goal_ready: bool = False
         self.rps_result: str = 'none'
@@ -162,7 +164,7 @@ class V2VDecisionNode(Node):
         self.create_subscription(Float32, '/lane_width',                  self._cb_width,  10)
         self.create_subscription(Float32, '/relative_distance',           self._cb_dist,   10)
         self.create_subscription(String,  '/led_state',                   self._cb_led_state, 10)
-        self.create_subscription(Float32, '/led_score',                   self._cb_led_score, 10)
+        self.create_subscription(Float32, '/opponent_yield_score',        self._cb_opponent_score, 10)
         self.create_subscription(String,  '/memory_status',               self._cb_mem_status, 10)
         self.create_subscription(Bool,    '/reverse_goal_ready',          self._cb_rev_goal, 10)
         self.create_subscription(String,  '/rps_result',                  self._cb_rps_result, 10)
@@ -175,6 +177,7 @@ class V2VDecisionNode(Node):
         self.pub_neg_req  = self.create_publisher(Bool,   '/negotiation_request', 10)
         self.pub_decision = self.create_publisher(String, '/decision_result',     10)
         self.pub_led      = self.create_publisher(String, '/led_command',         10)
+        self.pub_ego_score = self.create_publisher(Float32, '/ego_yield_score',    10)
 
         dt = 1.0 / self.decision_hz if self.decision_hz > 0 else 0.1
         self.create_timer(dt, self._step)
@@ -229,8 +232,8 @@ class V2VDecisionNode(Node):
     def _cb_led_state(self, msg: String) -> None:
         self.led_state = str(msg.data).strip()
 
-    def _cb_led_score(self, msg: Float32) -> None:
-        self.led_score = float(msg.data)
+    def _cb_opponent_score(self, msg: Float32) -> None:
+        self.opponent_yield_score = clamp(float(msg.data), 0.0, 1.0)
 
     def _cb_mem_status(self, msg: String) -> None:
         self.memory_status = str(msg.data).strip()
@@ -323,6 +326,7 @@ class V2VDecisionNode(Node):
             self.w_stability * s_stability+
             self.w_dist      * s_dist
         )
+        self.ego_yield_score = float(score)
         self.get_logger().debug(
             f'[Score] space={s_space:.2f} rev={s_reverse:.2f} entry={s_entry:.2f} '
             f'wait={s_wait:.2f} stab={s_stability:.2f} dist={s_dist:.2f} → {score:.3f}'
@@ -336,6 +340,8 @@ class V2VDecisionNode(Node):
         l = String(); l.data = led_cmd;      self.pub_led.publish(l)
         if decision:
             d = String(); d.data = decision; self.pub_decision.publish(d)
+        score_msg = Float32(); score_msg.data = self.ego_yield_score
+        self.pub_ego_score.publish(score_msg)
 
     # ── 메인 스텝 ───────────────────────────────────────────────────────────
     def _step(self) -> None:
@@ -421,9 +427,9 @@ class V2VDecisionNode(Node):
 
         # ── SCORE_BASED_DECISION ───────────────────────────────────────────
         if self.state == State.SCORE_BASED_DECISION:
-            self._publish_all('KEEP_RIGHT_APPROACH', 'PURPLE_BLINK', 'scoring')
             my_score = self._compute_yield_score()
-            opponent_score = self.led_score  # vision_perception_node가 읽어온 상대 점수
+            self._publish_all('KEEP_RIGHT_APPROACH', 'PURPLE_BLINK', 'scoring')
+            opponent_score = self.opponent_yield_score
 
             self.get_logger().info(
                 f'[Score] 내 점수={my_score:.3f}, 상대 점수={opponent_score:.3f}'

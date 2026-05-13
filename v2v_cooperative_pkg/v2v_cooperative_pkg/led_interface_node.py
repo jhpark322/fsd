@@ -18,7 +18,7 @@ LED 색상 코드 → 상태 의미:
   RED_BLINK     : SAFE_STOP           (비상 정지)
   GREEN_FLASH   : 협상 승리 / 진행 결정
 
-점등 개수: led_score_ratio (0~1) 에 비례해 1~5개 표시 (점수 우위 표현)
+점등 개수: ego_yield_score (0~1) 에 비례해 1~5개 표시 (점수 우위 표현)
 
 하드웨어 백엔드:
   - Jetson GPIO (Jetson Orin Nano)
@@ -27,7 +27,7 @@ LED 색상 코드 → 상태 의미:
 
 입력 토픽:
   /led_command      String
-  /led_score        Float32  (자차 점수, 0~1 정규화)
+  /ego_yield_score  Float32  (자차 점수, 0~1 정규화)
 
 출력 토픽:
   /led_status_feedback  String  (현재 LED 상태 피드백)
@@ -51,14 +51,15 @@ _COLOR_PATTERNS = {
     'GREEN':          [True,  True,  True,  True,  True ],
     'YELLOW':         [True,  True,  True,  False, False],
     'ORANGE_BLINK':   [True,  True,  True,  False, False],  # blink 처리
-    'BLUE_BLINK':     [False, True,  True,  True,  False],
-    'PURPLE_BLINK':   [True,  False, True,  False, True ],
-    'RED':            [True,  False, False, False, False],
-    'RED_BLINK':      [True,  False, False, False, False],
-    'CYAN':           [False, True,  False, True,  False],
-    'GREEN_BLINK':    [True,  True,  True,  True,  True ],
-    'GREEN_FLASH':    [True,  True,  True,  True,  True ],
-    'OFF':            [False, False, False, False, False],
+    'BLUE_BLINK':           [False, True,  True,  True,  False],
+    'PURPLE_BLINK':         [True,  False, True,  False, True ],
+    'SCORE_BASED_DECISION': [True,  False, True,  False, True ],
+    'RED':                  [True,  False, False, False, False],
+    'RED_BLINK':            [True,  False, False, False, False],
+    'CYAN':                 [False, True,  False, True,  False],
+    'GREEN_BLINK':          [True,  True,  True,  True,  True ],
+    'GREEN_FLASH':          [True,  True,  True,  True,  True ],
+    'OFF':                  [False, False, False, False, False],
 }
 
 _BLINK_COMMANDS = {
@@ -98,7 +99,7 @@ class LedInterfaceNode(Node):
 
         # ── 구독 ─────────────────────────────────────────────────────────
         self.create_subscription(String,  '/led_command', self._cb_command, 10)
-        self.create_subscription(Float32, '/led_score',   self._cb_score,  10)
+        self.create_subscription(Float32, '/ego_yield_score', self._cb_score, 10)
 
         # ── 발행 ─────────────────────────────────────────────────────────
         self.pub_feedback = self.create_publisher(String, '/led_status_feedback', 10)
@@ -144,7 +145,7 @@ class LedInterfaceNode(Node):
 
     def _apply_score_to_pattern(self, pattern: List[bool]) -> List[bool]:
         """점수 기반 판단 상태에서는 점등 개수로 점수 표현."""
-        if self.current_command == 'SCORE_BASED_DECISION':
+        if self.current_command in ('SCORE_BASED_DECISION', 'PURPLE_BLINK'):
             count = self._score_to_count()
             return [i < count for i in range(5)]
         return pattern

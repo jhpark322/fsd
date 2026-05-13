@@ -22,6 +22,7 @@ setup(
             # Python 전용 노드
             'v2v_decision_node      = v2v_cooperative_pkg.v2v_decision_node:main',
             'spatial_memory_node    = v2v_cooperative_pkg.spatial_memory_node:main',
+            'visual_v2v_perception_node = v2v_cooperative_pkg.visual_v2v_perception_node:main',
             'negotiation_hmi_node   = v2v_cooperative_pkg.negotiation_hmi_node:main',
             'led_interface_node     = v2v_cooperative_pkg.led_interface_node:main',
             # Python fallback (C++ v2v_cpp_nodes 패키지 사용 권장)
