@@ -6,12 +6,12 @@ v2v_decision_node
 
 상태 전이:
   NORMAL_CENTER_DRIVE
-    → KEEP_RIGHT_APPROACH   (상대 차량 검출, relative_distance < approach_dist)
+    → KEEP_RIGHT_APPROACH   (1111 LED beacon 검출, relative_distance < approach_dist)
   KEEP_RIGHT_APPROACH
-    → DEADLOCK_DETECTED     (교행 불가: relative_distance < deadlock_dist AND lane_width < passable)
+    → DEADLOCK_DETECTED     (beacon이 approach_stop_dist 이내, 또는 교행 불가)
     → NORMAL_CENTER_DRIVE   (상대 차량 사라짐)
   DEADLOCK_DETECTED
-    → RPS_NEGOTIATION       (즉시)
+    → RPS_NEGOTIATION       (정지 후 상태/협상 패턴 표시)
   RPS_NEGOTIATION
     → SCORE_BASED_DECISION  (협상 실패: timeout / 거부 / 오류)
     → REVERSE_EXECUTE       (협상 승리 → 진행; 패배 → 양보 = REVERSE)
@@ -85,6 +85,7 @@ class V2VDecisionNode(Node):
 
         # 거리 임계값
         self.declare_parameter('approach_dist_m', 1.50)    # 상대 차량 검출 → 우측통행
+        self.declare_parameter('approach_stop_dist_m', 0.75)  # LED beacon 검출 후 정지/상태표시 거리
         self.declare_parameter('deadlock_dist_m', 0.60)    # 교착 판단 거리
         self.declare_parameter('clear_dist_m', 1.20)       # 상대 통과 완료 판단 거리
         self.declare_parameter('passable_width_margin_m', 0.05)  # 교행 가능 폭 여유
@@ -108,6 +109,7 @@ class V2VDecisionNode(Node):
         self.decision_hz          = float(self.get_parameter('decision_hz').value)
         self.robot_width_m        = float(self.get_parameter('robot_width_m').value)
         self.approach_dist_m      = float(self.get_parameter('approach_dist_m').value)
+        self.approach_stop_dist_m = float(self.get_parameter('approach_stop_dist_m').value)
         self.deadlock_dist_m      = float(self.get_parameter('deadlock_dist_m').value)
         self.clear_dist_m         = float(self.get_parameter('clear_dist_m').value)
         self.passable_width_margin = float(self.get_parameter('passable_width_margin_m').value)
@@ -274,6 +276,12 @@ class V2VDecisionNode(Node):
             return False
         if self.relative_distance is None:
             return False
+        beacon_stop = (
+            self.led_state == 'vehicle_beacon' and
+            self.relative_distance <= self.approach_stop_dist_m
+        )
+        if beacon_stop:
+            return True
         dist_close = self.relative_distance < self.deadlock_dist_m
         # 도로 폭이 교행 가능 한계 이하 (2*robot_width + margin)
         min_passable = 2.0 * self.robot_width_m + self.passable_width_margin
@@ -387,14 +395,14 @@ class V2VDecisionNode(Node):
 
         # ── DEADLOCK_DETECTED ──────────────────────────────────────────────
         if self.state == State.DEADLOCK_DETECTED:
-            self._publish_all('KEEP_RIGHT_APPROACH', 'ORANGE_BLINK')
+            self._publish_all('WAIT_PASS', 'ORANGE_BLINK')
             # 즉시 협상으로 전이
             self.transition(State.RPS_NEGOTIATION)
             return
 
         # ── RPS_NEGOTIATION ────────────────────────────────────────────────
         if self.state == State.RPS_NEGOTIATION:
-            self._publish_all('KEEP_RIGHT_APPROACH', 'BLUE_BLINK', 'negotiating')
+            self._publish_all('WAIT_PASS', 'BLUE_BLINK', 'negotiating')
             # 협상 요청 발행 (최초 1회)
             if not self._rps_request_sent:
                 req = Bool(); req.data = True
@@ -433,7 +441,7 @@ class V2VDecisionNode(Node):
         # ── SCORE_BASED_DECISION ───────────────────────────────────────────
         if self.state == State.SCORE_BASED_DECISION:
             my_score = self._compute_yield_score()
-            self._publish_all('KEEP_RIGHT_APPROACH', 'PURPLE_BLINK', 'scoring')
+            self._publish_all('WAIT_PASS', 'PURPLE_BLINK', 'scoring')
             opponent_score = self.opponent_yield_score
 
             self.get_logger().info(

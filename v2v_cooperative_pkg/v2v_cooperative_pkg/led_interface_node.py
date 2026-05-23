@@ -4,12 +4,12 @@ led_interface_node
 ───────────────────
 외부 LED 상태 표시 노드.
 
-/led_command 토픽을 수신해 LED 5개를 상태에 따라 제어한다.
+/led_command 토픽을 수신해 LED 4개를 상태에 따라 제어한다.
 
-LED 명령은 색이 아니라 5개 LED의 on/off 패턴으로 표현한다.
-패턴 순서: [LED1, LED2, LED3, LED4, LED5], 1=켜짐, 0=꺼짐.
+LED 명령은 색이 아니라 4개 LED의 on/off 패턴으로 표현한다.
+패턴 순서: [LED1, LED2, LED3, LED4], 1=켜짐, 0=꺼짐.
 
-점등 개수: ego_yield_score (0~1) 에 비례해 1~5개 표시 (점수 우위 표현)
+점등 개수: ego_yield_score (0~1) 에 비례해 1~4개 표시 (점수 우위 표현)
 
 하드웨어 백엔드:
   - Jetson GPIO (Jetson Orin Nano)
@@ -34,25 +34,25 @@ from rclpy.node import Node
 from std_msgs.msg import Float32, String
 
 # LED 핀 번호 (BCM 기준, Jetson Orin Nano GPIO 번호로 교체 가능)
-_DEFAULT_PIN_MAP = [18, 23, 24, 25, 12]  # LED 1~5번 핀
+_DEFAULT_PIN_MAP = [18, 23, 24, 25]  # LED 1~4번 핀
 
-# 명령별 5비트 패턴. Visual V2V 인식 노드의 PATTERN_TO_STATE와 맞춘다.
+# 명령별 4비트 패턴. Visual V2V 인식 노드의 PATTERN_TO_STATE와 맞춘다.
 _COMMAND_PATTERNS = {
-    'GREEN':                [True,  False, False, False, True ],  # normal
-    'YELLOW':               [False, True,  False, True,  False],  # keep_right
-    'ORANGE_BLINK':         [True,  False, True,  True,  False],  # deadlock
-    'BLUE_BLINK':           [False, False, True,  False, False],  # rps_request
-    'PURPLE_BLINK':         [True,  False, True,  False, True ],  # score_based
-    'SCORE_BASED_DECISION': [True,  False, True,  False, True ],
-    'RED':                  [True,  False, False, True,  False],  # yield
-    'CYAN':                 [False, True,  False, False, True ],  # wait_pass
-    'GREEN_BLINK':          [False, False, True,  True,  True ],  # reenter
-    'RED_BLINK':            [False, False, False, True,  False],  # safe_stop
-    'GREEN_FLASH':          [False, True,  True,  True,  False],  # proceed
-    'RPS_ROCK':             [True,  True,  False, False, True ],
-    'RPS_PAPER':            [False, False, True,  False, True ],
-    'RPS_SCISSORS':         [False, True,  True,  False, True ],
-    'OFF':                  [False, False, False, False, False],
+    'GREEN':                [True,  True,  True,  True ],  # vehicle beacon
+    'YELLOW':               [False, True,  False, True ],  # keep_right
+    'ORANGE_BLINK':         [True,  False, True,  False],  # deadlock
+    'BLUE_BLINK':           [False, False, True,  False],  # rps_request
+    'PURPLE_BLINK':         [True,  False, False, True ],  # score_based
+    'SCORE_BASED_DECISION': [True,  False, False, True ],
+    'RED':                  [True,  False, False, True ],  # yield
+    'CYAN':                 [False, True,  True,  False],  # wait_pass
+    'GREEN_BLINK':          [False, False, True,  True ],  # reenter
+    'RED_BLINK':            [False, False, False, True ],  # safe_stop
+    'GREEN_FLASH':          [True,  False, True,  True ],  # proceed
+    'RPS_ROCK':             [True,  True,  False, True ],
+    'RPS_PAPER':            [False, True,  True,  True ],
+    'RPS_SCISSORS':         [True,  True,  True,  False],
+    'OFF':                  [False, False, False, False],
 }
 
 _BLINK_COMMANDS = {
@@ -88,7 +88,7 @@ class LedInterfaceNode(Node):
         self.ego_yield_score: float = 0.0
         self._blink_state: bool = False
         self._blink_timer: float = 0.0
-        self._last_pattern: List[bool] = [False] * 5
+        self._last_pattern: List[bool] = [False] * 4
 
         # ── 구독 ─────────────────────────────────────────────────────────
         self.create_subscription(String,  '/led_command', self._cb_command, 10)
@@ -133,14 +133,20 @@ class LedInterfaceNode(Node):
 
     # ── LED 출력 ──────────────────────────────────────────────────────────
     def _score_to_count(self) -> int:
-        """점수(0~1)를 점등 LED 개수(1~5)로 변환."""
-        return max(1, min(5, round(self.ego_yield_score * 4) + 1))
+        """점수(0~1)를 점등 LED 개수(1~4)로 변환."""
+        return max(1, min(4, round(self.ego_yield_score * 3) + 1))
 
     def _apply_score_to_pattern(self, pattern: List[bool]) -> List[bool]:
         """점수 기반 판단 상태에서는 점등 개수로 점수 표현."""
         if self.current_command in ('SCORE_BASED_DECISION', 'PURPLE_BLINK'):
             count = self._score_to_count()
-            return [i < count for i in range(5)]
+            score_patterns = {
+                1: [False, True,  False, False],  # 0100
+                2: [True,  False, False, False],  # 1000
+                3: [True,  True,  False, False],  # 1100
+                4: [True,  True,  True,  True ],  # 1111
+            }
+            return score_patterns[count]
         return pattern
 
     def _set_leds(self, states: List[bool]) -> None:
@@ -160,7 +166,7 @@ class LedInterfaceNode(Node):
             GPIO.output(pin, GPIO.HIGH if state else GPIO.LOW)
 
     def _all_off(self) -> None:
-        self._set_leds([False] * 5)
+        self._set_leds([False] * 4)
 
     # ── blink 처리 ────────────────────────────────────────────────────────
     def _update_blink(self, dt: float) -> bool:
@@ -181,7 +187,7 @@ class LedInterfaceNode(Node):
 
         if cmd in _BLINK_COMMANDS:
             on = self._update_blink(dt)
-            pattern = base_pattern if on else [False] * 5
+            pattern = base_pattern if on else [False] * 4
         else:
             pattern = base_pattern
 

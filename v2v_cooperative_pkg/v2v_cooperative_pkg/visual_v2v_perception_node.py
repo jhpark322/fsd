@@ -9,9 +9,9 @@ The design documents describe a lightweight perception split:
   lower ROI  -> lane pipeline handled by lane_length_pkg
 
 This node fills the missing upper-ROI side. It reads the LED strip as a
-5-bit on/off pattern, not by color. Bright blobs are grouped into a panel,
-quantized into five slots, decoded through a pattern table, and published
-as state plus score ratio for the decision node.
+4-bit on/off pattern, not by color. While the peer vehicle is approaching,
+all four LEDs stay on as a beacon. Once the beacon is close enough, the
+decision layer can stop and switch the LEDs to state/score patterns.
 
 Inputs:
   /image_raw                  sensor_msgs/Image
@@ -45,28 +45,26 @@ class LedBlob:
 
 
 SCORE_PATTERNS: Dict[str, float] = {
-    '10000': 0.2,
-    '11000': 0.4,
-    '11100': 0.6,
-    '11110': 0.8,
-    '11111': 1.0,
+    '0100': 0.25,
+    '1000': 0.50,
+    '1100': 0.75,
+    '1111': 1.00,
 }
 
 
 PATTERN_TO_STATE: Dict[str, str] = {
-    '10001': 'normal',
-    '01010': 'keep_right',
-    '10110': 'deadlock',
-    '00100': 'rps_request',
-    '10101': 'score_based',
-    '10010': 'yield',
-    '01001': 'wait_pass',
-    '00111': 'reenter',
-    '00010': 'safe_stop',
-    '01110': 'proceed',
-    '11001': 'rps_rock',
-    '00101': 'rps_paper',
-    '01101': 'rps_scissors',
+    '1111': 'vehicle_beacon',
+    '0101': 'keep_right',
+    '1010': 'deadlock',
+    '0010': 'rps_request',
+    '1001': 'yield',
+    '0110': 'wait_pass',
+    '0011': 'reenter',
+    '0001': 'safe_stop',
+    '1011': 'proceed',
+    '1101': 'rps_rock',
+    '0111': 'rps_paper',
+    '1110': 'rps_scissors',
 }
 
 
@@ -79,6 +77,7 @@ class VisualV2VPerceptionNode(Node):
         self.declare_parameter('min_blob_area_px', 30.0)
         self.declare_parameter('max_blob_area_px', 5000.0)
         self.declare_parameter('min_led_brightness', 130)
+        self.declare_parameter('led_slot_count', 4)
         self.declare_parameter('panel_real_width_m', 0.12)
         self.declare_parameter('camera_fx_px', 700.0)
         self.declare_parameter('distance_min_m', 0.15)
@@ -91,6 +90,7 @@ class VisualV2VPerceptionNode(Node):
         self.min_blob_area_px = float(self.get_parameter('min_blob_area_px').value)
         self.max_blob_area_px = float(self.get_parameter('max_blob_area_px').value)
         self.min_led_brightness = int(self.get_parameter('min_led_brightness').value)
+        self.led_slot_count = max(1, int(self.get_parameter('led_slot_count').value))
         self.panel_real_width_m = float(self.get_parameter('panel_real_width_m').value)
         self.camera_fx_px = float(self.get_parameter('camera_fx_px').value)
         self.distance_min_m = float(self.get_parameter('distance_min_m').value)
@@ -173,21 +173,21 @@ class VisualV2VPerceptionNode(Node):
     def _select_panel(self, blobs: List[LedBlob]) -> List[LedBlob]:
         if not blobs:
             return []
-        # A 5-LED strip appears as horizontally aligned bright blobs.
+        # A 4-LED strip appears as horizontally aligned bright blobs.
         blobs = sorted(blobs, key=lambda b: b.cx)
         best: List[LedBlob] = []
         for blob in blobs:
             cluster = [b for b in blobs if abs(b.cy - blob.cy) < 35.0]
             if len(cluster) > len(best):
                 best = cluster
-        return sorted(best[:5], key=lambda b: b.cx)
+        return sorted(best[:self.led_slot_count], key=lambda b: b.cx)
 
     def _estimate_distance(self, panel: List[LedBlob]) -> float:
         if len(panel) < 2:
             return self.distance_max_m
         detected_min = min(b.bbox[0] for b in panel)
         detected_max = max(b.bbox[0] + b.bbox[2] for b in panel)
-        if self.panel_bounds is not None and len(panel) < 5:
+        if self.panel_bounds is not None and len(panel) < self.led_slot_count:
             min_x, max_x = self.panel_bounds
         else:
             min_x, max_x = float(detected_min), float(detected_max)
@@ -197,32 +197,33 @@ class VisualV2VPerceptionNode(Node):
 
     def _panel_to_pattern(self, panel: List[LedBlob]) -> str:
         if not panel:
-            return '00000'
+            return '0' * self.led_slot_count
 
         detected_min = min(b.bbox[0] for b in panel)
         detected_max = max(b.bbox[0] + b.bbox[2] for b in panel)
-        if len(panel) >= 5:
+        if len(panel) >= self.led_slot_count:
             self.panel_bounds = (float(detected_min), float(detected_max))
 
-        if self.panel_bounds is not None and len(panel) < 5:
+        if self.panel_bounds is not None and len(panel) < self.led_slot_count:
             min_x, max_x = self.panel_bounds
         else:
             min_x, max_x = float(detected_min), float(detected_max)
 
         width = max(1.0, float(max_x - min_x))
-        slot_w = width / 5.0
-        slots = [False] * 5
+        slot_w = width / float(self.led_slot_count)
+        slots = [False] * self.led_slot_count
         for blob in panel:
             idx = int((blob.cx - min_x) / slot_w)
-            idx = max(0, min(4, idx))
+            idx = max(0, min(self.led_slot_count - 1, idx))
             slots[idx] = True
         return ''.join('1' if on else '0' for on in slots)
 
     def _decode_pattern(self, pattern: str) -> Tuple[str, float]:
-        if pattern in SCORE_PATTERNS:
-            return 'score_based', SCORE_PATTERNS[pattern]
         state = PATTERN_TO_STATE.get(pattern, 'unknown')
-        return state, 0.0
+        score = SCORE_PATTERNS.get(pattern, 0.0)
+        if pattern in SCORE_PATTERNS and state == 'unknown':
+            state = 'score_based'
+        return state, score
 
     def _publish_detection(self, distance: float, state: str, score: float) -> None:
         d = Float32()
